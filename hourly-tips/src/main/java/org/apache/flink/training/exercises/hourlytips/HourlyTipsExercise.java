@@ -19,15 +19,21 @@
 package org.apache.flink.training.exercises.hourlytips;
 
 import org.apache.flink.api.common.JobExecutionResult;
+import org.apache.flink.api.common.eventtime.WatermarkStrategy;
+import org.apache.flink.api.common.functions.ReduceFunction;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.streaming.api.datastream.DataStream;
 import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.flink.streaming.api.functions.sink.PrintSinkFunction;
 import org.apache.flink.streaming.api.functions.sink.SinkFunction;
 import org.apache.flink.streaming.api.functions.source.SourceFunction;
+import org.apache.flink.streaming.api.functions.windowing.ProcessWindowFunction;
+import org.apache.flink.streaming.api.windowing.assigners.TumblingEventTimeWindows;
+import org.apache.flink.streaming.api.windowing.time.Time;
+import org.apache.flink.streaming.api.windowing.windows.TimeWindow;
 import org.apache.flink.training.exercises.common.datatypes.TaxiFare;
 import org.apache.flink.training.exercises.common.sources.TaxiFareGenerator;
-import org.apache.flink.training.exercises.common.utils.MissingSolutionException;
+import org.apache.flink.util.Collector;
 
 /**
  * The Hourly Tips exercise from the Flink training.
@@ -72,22 +78,84 @@ public class HourlyTipsExercise {
         // set up streaming execution environment
         StreamExecutionEnvironment env = StreamExecutionEnvironment.getExecutionEnvironment();
 
-        // start the data generator
-        DataStream<TaxiFare> fares = env.addSource(source);
+        // start the data generator and arrange for watermarking
+        DataStream<TaxiFare> fares =
+              env.addSource(source)
+                    .assignTimestampsAndWatermarks(
+                          // taxi fares are in order
+                          WatermarkStrategy.<TaxiFare>forMonotonousTimestamps().withTimestampAssigner((fare, t) -> fare.getEventTimeMillis())
+                    );
 
-        // replace this with your solution
-        if (true) {
-            throw new MissingSolutionException();
-        }
+        TumblingEventTimeWindows OneHourWindowAssigner = TumblingEventTimeWindows.of(Time.hours(1));
 
-        // the results should be sent to the sink that was passed in
-        // (otherwise the tests won't work)
-        // you can end the pipeline with something like this:
+        // compute tips per hour for each driver
+        DataStream<Tuple3<Long, Long, Float>> hourlyTips =
+              fares.keyBy((TaxiFare fare) -> fare.driverId)
+                    .window(OneHourWindowAssigner)
+                    //.process(new AddTips());
+                    .reduce(new ReduceTotalDriverTips(), new CollectTotalTipsPerDriverPerHour());
 
-        // DataStream<Tuple3<Long, Long, Float>> hourlyMax = ...
-        // hourlyMax.addSink(sink);
+        // find the driver with the highest sum of tips for each hour
+        DataStream<Tuple3<Long, Long, Float>> hourlyMax =
+              hourlyTips.windowAll(OneHourWindowAssigner).maxBy(2);
 
-        // execute the pipeline and return the result
+        /* You should explore how this alternative (commented out below) behaves.
+         * In what ways is the same as, and different from, the solution above (using a windowAll)?
+         */
+
+//         DataStream<Tuple3<Long, Long, Float>> hourlyMax = hourlyTips.keyBy(t -> t.f0).maxBy(2);
+
+        hourlyMax.addSink(sink);
+
+        // execute the transformation pipeline
         return env.execute("Hourly Tips");
     }
+
+    /*
+     * Wraps the pre-aggregated result into a tuple along with the window's timestamp and key.
+     */
+    public static class AddTips
+          extends ProcessWindowFunction<TaxiFare, Tuple3<Long, Long, Float>, Long, TimeWindow> {
+
+        @Override
+        public void process(
+              Long key,
+              Context context,
+              Iterable<TaxiFare> fares,
+              Collector<Tuple3<Long, Long, Float>> out) {
+
+            float sumOfTips = 0F;
+            for (TaxiFare f : fares) {
+                sumOfTips += f.tip;
+            }
+            out.collect(Tuple3.of(context.window().getEnd(), key, sumOfTips));
+        }
+    }
+
+    public static class ReduceTotalDriverTips implements ReduceFunction<TaxiFare> {
+        public TaxiFare reduce(TaxiFare fare1, TaxiFare fare2) {
+            return new TaxiFare(
+            0L,
+            0L,
+            fare1.driverId,
+            null,
+            null,
+            fare1.tip + fare2.tip,
+            0L,
+            0L);
+        }
+    }
+
+    static class CollectTotalTipsPerDriverPerHour extends ProcessWindowFunction<TaxiFare, Tuple3<Long, Long, Float>, Long, TimeWindow> {
+        @Override
+        public void process(
+              Long key,
+              Context context,
+              Iterable<TaxiFare> fares,
+              Collector<Tuple3<Long, Long, Float>> out) {
+            TaxiFare taxiFare = fares.iterator().next();
+            out.collect(Tuple3.of(context.window().getEnd(), key, taxiFare.tip));
+        }
+    }
+
 }
