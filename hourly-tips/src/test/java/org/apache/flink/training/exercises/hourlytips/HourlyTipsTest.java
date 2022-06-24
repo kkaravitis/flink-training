@@ -18,6 +18,8 @@
 
 package org.apache.flink.training.exercises.hourlytips;
 
+import java.util.Arrays;
+import java.util.Collection;
 import org.apache.flink.api.common.JobExecutionResult;
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.runtime.testutils.MiniClusterResourceConfiguration;
@@ -37,9 +39,13 @@ import org.junit.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameters;
 
 import static org.assertj.core.api.AssertionsForInterfaceTypes.assertThat;
 
+@RunWith(Parameterized.class)
 public class HourlyTipsTest {
 
     private static final int PARALLELISM = 2;
@@ -53,6 +59,17 @@ public class HourlyTipsTest {
                             .setNumberTaskManagers(1)
                             .build());
 
+    @Parameters
+    public static List<ExecutionStrategy> executionStrategies() {
+        return Arrays.asList(ExecutionStrategy.values());
+    }
+
+    private ExecutionStrategy executionStrategy;
+
+    public HourlyTipsTest(ExecutionStrategy executionStrategy) {
+        this.executionStrategy = executionStrategy;
+    }
+
     @Test
     public void testOneDriverOneTip() throws Exception {
 
@@ -62,7 +79,7 @@ public class HourlyTipsTest {
 
         Tuple3<Long, Long, Float> expected = Tuple3.of(t(60).toEpochMilli(), 1L, 1.0F);
 
-        assertThat(results(source)).containsExactly(expected);
+        assertThat(results(source, executionStrategy)).containsExactly(expected);
     }
 
     @Test
@@ -76,7 +93,7 @@ public class HourlyTipsTest {
         Tuple3<Long, Long, Float> hour1 = Tuple3.of(t(60).toEpochMilli(), 1L, 6.0F);
         Tuple3<Long, Long, Float> hour2 = Tuple3.of(t(120).toEpochMilli(), 1L, 10.0F);
 
-        assertThat(results(source)).containsExactlyInAnyOrder(hour1, hour2);
+        assertThat(results(source, executionStrategy)).containsExactlyInAnyOrder(hour1, hour2);
     }
 
     @Test
@@ -104,7 +121,7 @@ public class HourlyTipsTest {
         Tuple3<Long, Long, Float> hour1 = Tuple3.of(t(60).toEpochMilli(), 1L, 6.0F);
         Tuple3<Long, Long, Float> hour2 = Tuple3.of(t(120).toEpochMilli(), 2L, 20.0F);
 
-        assertThat(results(source)).containsExactlyInAnyOrder(hour1, hour2);
+        assertThat(results(source, executionStrategy)).containsExactlyInAnyOrder(hour1, hour2);
     }
 
     public Instant t(int minutes) {
@@ -115,22 +132,10 @@ public class HourlyTipsTest {
         return new TaxiFare(0, 0, driverId, startTime, "", tip, 0F, 0F);
     }
 
-    private ComposedPipeline<TaxiFare, Tuple3<Long, Long, Float>> hourlyTipsPipeline() {
-
-        ExecutablePipeline<TaxiFare, Tuple3<Long, Long, Float>> exercise =
-                (source, sink) -> new HourlyTipsExercise(source, sink).execute();
-
-        ExecutablePipeline<TaxiFare, Tuple3<Long, Long, Float>> solution =
-                (source, sink) -> new HourlyTipsSolution(source, sink).execute();
-
-        return new ComposedPipeline<>(exercise, solution);
-    }
-
-    protected List<Tuple3<Long, Long, Float>> results(SourceFunction<TaxiFare> source)
+    protected List<Tuple3<Long, Long, Float>> results(SourceFunction<TaxiFare> source, ExecutionStrategy executionStrategy)
             throws Exception {
-
         TestSink<Tuple3<Long, Long, Float>> sink = new TestSink<>();
-        JobExecutionResult jobResult = hourlyTipsPipeline().execute(source, sink);
+        JobExecutionResult jobResult = new HourlyTipsExercise(source, sink).execute(executionStrategy);
         return sink.getResults(jobResult);
     }
 }
